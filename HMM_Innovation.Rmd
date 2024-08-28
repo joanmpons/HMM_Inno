@@ -40,17 +40,17 @@ theme_set(theme_minimal(base_size = 12) +
 ```
 
 ```{r data import, echo=FALSE, message=FALSE, warning=FALSE, include = FALSE}
-df_inno <- read_csv("Dades/Empreses Innovadores per període/Anual/Definitiu.csv", 
+df_inno <- read_csv("Emp_Inno.csv", 
                     col_types = cols(Año = col_date(format = "%Y"),
                                      "Tipo de indicador" = col_skip()))
 
-df_invest <- read_delim("Dades/Inputs d'innovació per període/Definitiu.csv",
+df_invest <- read_delim("Inputs_inno.csv",
                           delim = ";",
                           escape_double = FALSE,
                           col_types = cols(Año = col_date(format = "%Y")),
                           trim_ws = TRUE)
 
-df_gov_invest <- read_csv("Dades/Inversió pública/Gov_financed_R&D.csv",
+df_gov_invest <- read_csv("Gov_financed_R&D.csv",
                           col_types = cols(COU = col_skip(), Country = col_skip(),
                                            MEASURE = col_skip(), Measure = col_character(),
                                            VARIABLE = col_skip(), YEAR = col_skip(),
