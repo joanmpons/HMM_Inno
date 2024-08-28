@@ -1,7 +1,7 @@
 ---
-title: "Anàlisi de dades TFM"
+title: "Anàlisi de dades d'innovació"
 author: "Joan Miquel Pons Crespí"
-date: "2024-05-22"
+date: "2024"
 output:
   html_document:
     theme: united
