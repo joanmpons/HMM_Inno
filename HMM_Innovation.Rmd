@@ -1,0 +1,999 @@
+---
+title: "Anàlisi de dades TFM"
+author: "Joan Miquel Pons Crespí"
+date: "2024-05-22"
+output:
+  html_document:
+    theme: united
+    toc: true
+  pdf_document: default
+fig_width: 9 
+fig_height: 6 
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+library(readr)
+library(rmarkdown)
+library(car)
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(GGally) 
+library(stats)
+library(glmnet)
+library(RColorBrewer)
+library(broom)
+library(extrafont)
+library(depmixS4)
+library(fastDummies)
+
+"%nin%"<-Negate("%in%")
+
+theme_set(theme_minimal(base_size = 12) +
+            theme(text = element_text(size = 12, family = "Montserrat"),
+                  plot.title = element_text(face = "bold", size = 18),
+                  plot.subtitle = element_text(size = 14),
+                  legend.position = "bottom",
+                  panel.grid.major = element_line(color = "gray80"),
+                  panel.grid.minor = element_line(color = "gray90")))
+```
+
+```{r data import, echo=FALSE, message=FALSE, warning=FALSE, include = FALSE}
+df_inno <- read_csv("Dades/Empreses Innovadores per període/Anual/Definitiu.csv", 
+                    col_types = cols(Año = col_date(format = "%Y"),
+                                     "Tipo de indicador" = col_skip()))
+
+df_invest <- read_delim("Dades/Inputs d'innovació per període/Definitiu.csv",
+                          delim = ";",
+                          escape_double = FALSE,
+                          col_types = cols(Año = col_date(format = "%Y")),
+                          trim_ws = TRUE)
+
+df_gov_invest <- read_csv("Dades/Inversió pública/Gov_financed_R&D.csv",
+                          col_types = cols(COU = col_skip(), Country = col_skip(),
+                                           MEASURE = col_skip(), Measure = col_character(),
+                                           VARIABLE = col_skip(), YEAR = col_skip(),
+                                           Year = col_date(format = "%Y"), `Unit Code` = col_skip(),
+                                           Unit = col_skip(), `PowerCode Code` = col_skip(), 
+                                           PowerCode = col_skip(), `Reference Period Code` = col_skip(), 
+                                           `Reference Period` = col_skip(), 
+                                           `Flag Codes` = col_skip(), Flags = col_skip()))
+```
+
+```{r data preprocessing, echo=FALSE, message=FALSE, warning=FALSE, include = FALSE}
+df_inno <- df_inno %>% 
+  rename("Sector" = "Ramas de actividad",
+         "Tamaño" = "Tamaño de la empresa")
+
+df_inno <- df_inno %>% 
+  mutate(Sector = factor(Sector),
+         Tamaño = factor(Tamaño))
+
+df_invest <- df_invest %>% 
+  rename("Sector" = "Ramas de actividad",
+         "Tamaño" = "Tamaño de la empresa",
+         "Indicador" = "Tipo de indicador")
+
+df_invest <- df_invest %>%
+  mutate(Sector = factor(Sector),
+         Tamaño = factor(Tamaño),
+         Indicador = factor(Indicador))
+
+df_invest <- df_invest %>% 
+  pivot_wider(names_from = Indicador, values_from = Total)
+
+df_invest[ , 5:dim(df_invest)[2]] <- df_invest[ , 5:dim(df_invest)[2]] %>%
+  mutate_all(function(x) x / 100 * df_invest$"Gastos totales (miles de euros)")
+
+df_gov_invest <- df_gov_invest %>%
+  filter(Measure == "National Currency",
+         Variable %nin% c("Government budget allocations for R&D",
+                          "Government budgets for R&D and tax incentive support for business R&D (GBARD+GTARD)"),
+         Year > "2003-01-01" & Year <"2018-01-01") %>%
+  dplyr::select (!c(Measure)) %>%
+  rename("Año" = "Year") %>%
+  mutate(Value = Value * 1000)
+
+df_gov_invest <- df_gov_invest %>% 
+  pivot_wider(names_from = Variable, values_from = Value)
+
+df_final <- merge(df_inno, df_invest,by = c("Año","Sector","Tamaño"))
+df_final <- merge(df_final, df_gov_invest,by = c("Año"))
+```
+
+## Conjunts de dades utilitzats
+
+<br>
+
+### Conjunt de dades 1: Empreses innovadores
+
+En aquest primer conjunt de dades s'inclou el total d'empreses innovadores per any, sector i mida de l'empresa. Les dades s'han obtingut a partir dels resultats de l'enquesta sobre la innovació en les empreses realitzada per l'INE. A continuació es poden consultar les variables que s'inclouen.
+
+```{r data info, echo=FALSE, message=FALSE, warning=FALSE, paged.print=TRUE}
+glimpse(df_inno)
+```
+
+<br>
+
+### Conjunt de dades 2: Inversió privada en innovació
+
+En aquest segon dataset s'inclou la despesa en innovació per any, sector i mida de l'empresa i segons el tipus de despesa. Les dades s'han obtingut a partir dels resultats de l'enquesta sobre la innovació en les empreses realitzada per l'INE. A continuació es poden consultar les variables que s'inclouen.
+
+```{r data info 2, echo=FALSE, message=FALSE, warning=FALSE, paged.print=TRUE}
+glimpse(df_invest)
+```
+
+<br>
+
+### Conjunt de dades 3: Inversió pública en innovació
+
+Aquestes dades inclouen la despesa pública en innovació per any. Les dades s'han obtingut a partir de la informació publicada per l'OCDE. A continuació es poden consultar les variables que s'inclouen.
+
+```{r data info 3, echo=FALSE, message=FALSE, warning=FALSE, paged.print=TRUE}
+glimpse(df_gov_invest)
+```
+
+<br>
+
+### Conjunt de dades 4: Dades finals
+
+Els tres datasets anteriors s'han combinat en un únic joc de dades que es farà servir per realitzar l'anàlisi estadística de les variables i l'aplicació dels models economètrics. A continuació es poden observar les variables incloses, incloent les diferents categories de mida i sector, així com el conjunt de dades final utilitzat.
+
+```{r data info 4, echo=FALSE, message=FALSE, warning=FALSE, paged.print=TRUE}
+glimpse(df_final)
+```
+
+```{r data info 5, echo=FALSE, message=FALSE, warning=FALSE, paged.print=TRUE}
+df_final %>%
+  select_if(is.factor) %>% 
+  sapply(levels)
+```
+
+```{r data info 6, echo=FALSE, message=FALSE, warning=FALSE, paged.print=TRUE}
+df_final%>%
+  paged_table()
+```
+
+<br>
+
+#### Variables principals
+
+Les principals característiques de les dades utilitzades són les següents:
+
+-   Les variables numèriques principals són:
+
+    -   Total d'empreses innovadores per període.
+
+    -   Despesa privada en innovació.
+
+    -   Finançament gubernamental de despesa privada en I+D.
+
+    -   Contribució del sector públic a la I+D a través d'incentius fiscals.
+
+-   La resta de variables numèriques són els diversos components de la despesa privada en innovació:
+
+    -   Inversió en I+D interna.
+
+    -   Inversió en I+D externa.
+
+    -   Adquisició de capital enfocat a la I+D.
+
+    -   Adquisició de coneixements externs.
+
+    -   Activitats formatives.
+
+    -   Introducció d'innovacions en el mercat.
+
+    -   Disseny i altres preparatius per a la producció i distribució.
+
+-   Les unitats de les variables numèriques són milers d'euros.
+
+-   Pel que fa a les variables categòriques, s'han segmentat les empreses segons la seva mida entre aquelles que compten amb més de 250 treballadors i les que no. També es distingeix entre les companyies que pertanyen al sector industrial o al sector serveis.
+
+<br>
+
+#### Nota metodològica
+
+A mode de nota metodològica, cal fer èmfasi en els punts següents:
+
+-   La variable dependent de l'anàlisi serà el total d'empreses innovadores per període.
+-   No es podran comparar directament el total d'empreses innovadores ni la despesa en I+D entre sectors ni entre empreses de mides diferents, ja que les dades no han estat normalitzades a partir del recompte total d'empreses pertanyents a cada grup.
+-   Les dades referents al finançament públic de les activitats innovadores només s'utilitzaran en analitzar el conjunt d'empreses independentment de la mida i del sector a causa de la falta de disponibilitat d'aquestes dades.
+-   Per analitzar la inversió privada en innovació s'utilitzaran tant la despesa desagregada en components com la quantitat total, depenent de la profunditat d'anàlisi desitjada en cada moment.
+
+<br>
+
+### Anàlisi exploratòria
+
+#### Evolució de la innovació al llarg dels anys
+
+Aquest primer conjunt de gràfics representa l'evolució de la innovació pel període 2004 - 2017. Les principals conclusions que en podem extreure son les següents:
+
+-   En primer lloc, s'observa que el total d'empreses innovadores es va reduïr significativament entre 2004 i 2017, passant de valors propers als 30000 fins arribar a totals anuals entorn dels 15000. Aquest decreixement va afectar sobretot a les empreses de menys de 250 treballadors i molt probablement fou propiciat per la crisi financera global del 2008.
+-   La innovació es va recuperar de manera més efectiva en el cas de les grans empreses, que el 2017 ja tornaven a comptar amb valors propers als de 2004, mentre que en el cas de les companyies amb menys de 250 empleats, el total d'empreses innovadores seguia molt per sota que al principi del període estudiat.
+-   Pel que fa a les diferències sectorials, sembla ser que el decreixement en la innovació va ser més gradual en el cas de les empreses industrials que en les del sector terciari.
+-   Finalment, una de ser observacions més rellavants per la nostra anàlisi és que sembla haver-hi dos grans règims d'innovació; períodes en que s'observen valors elevats d'empreses innovadores (2004 - 2009) i un segon grup amb significativament menys innovació (2010 - 2017).
+
+<br>
+
+```{r figure 1, echo=FALSE, message=FALSE, warning=FALSE,fig.align = 'center'}
+
+df_final %>%
+  ggplot(aes(x = Año, y = Total, color = Sector)) + 
+  geom_smooth(se = FALSE, size = 1.2) +
+  geom_point(size = 2, alpha = 0.7) +
+  facet_wrap(~Tamaño,scales = "free_y") +
+  labs(
+    title = "Empreses innovadores per sector i mida",
+    subtitle = "Evolució de la innovació al llarg dels anys",
+    x = "",
+    y = "",
+    color = "Sector") +
+  scale_color_brewer(palette = "Set2")
+
+```
+
+<br>
+
+```{r figure 2, echo=FALSE, message=FALSE, warning=FALSE,fig.align = 'center'}
+df_final %>%
+  ggplot(aes(x = Año, y = Total, color = Tamaño)) + 
+  geom_smooth(se = FALSE, size = 1.2) +
+  geom_point(size = 2, alpha = 0.7) +
+  facet_grid(~Sector) +
+  labs(
+    title = "Empreses innovadores per mida i sector",
+    subtitle = "Evolució de la innovació al llarg dels anys",
+    x = "",
+    y = "",
+    color = "Mida") +
+  scale_color_brewer(palette = "Set2")
+```
+
+<br>
+
+#### Evolució de la despesa al llarg dels anys
+
+Podem fer una anàlisi similar a l'anterior en el cas de la despesa pública i privada per comprovar si l'evolució d'aquestes presenta un comportament similar al de la innovació.
+
+A continuació es presenta un conjunt de 4 gràfics, dels quals podem extreure les conclusions següents:
+
+-   Despesa privada
+
+    -   Pel conjunt d'empreses, la despesa privada va créixer de manera acusada entre 2004 i 2008, quan va arribar al seu zènit. A partir d'aquest any, es precipità fins a retornar a valors inferiors als de 2005. El període 2015 - 2017 presenta una recuperació de la inversió privada en innovació i una tendència positiva de creixement d'aquesta. Tanmateix, el 2017 la despesa total seguia essent inferior a la del 2006.
+    -   De la mateixa manera que la innovació es va recuperar de manera més efectiva després de la crisi en les grans empreses, també ho feu la inversió privada.
+    -   Pel que fa a les diferències sectorials, la variabilitat en la despesa privada total fou més acusada en les empreses del sector serveis.
+    -   De nou, s'observen dos grans règims; períodes amb relativament poca inversió privada (2004 - 2005 o 2011 - 2017) i d'altres amb significativament més despesa (2006 - 2010).
+
+<br>
+
+-   Despesa pública i incentius fiscals a la innovació:
+
+    -   La despesa pública presenta un comportament similar al de la privada durant els anys estudiants. La diferència principal és potser la seva menor recuperació i el seu creixement més limitat després de la crisi.
+    -   Pel que fa als incentius fiscals, van arribar al seu punt més baix el 2011 i després es van recuperar ràpidament durant els anys posteriors, arribant a igualar i en alguns casos superar els valors anteriors a la crisi.
+    -   Un altre cop, s'observen dos grans règims.
+
+<br>
+
+-   Per entendre millor el context econòmic en relació a la innovació del període estudiat, l'article de Ramon Xifré (Xifré, 2018) resulta rellevant. L'autor exposa, per una banda, la preocupant caiguda en picat de la innovació des del 2008 i, per l'altra, que en els anys posteriors a la crisi es va experimentar un desacoblament entre la inversió privada i la inversió pública en innovació; mentre que la primera va incrementar, la segona es va contreure. Finalment, l'autor argumenta que una de les possibles causes de la precària situació de la innovació al país durant aquests anys foren l'excessiva expansió de la inversió durant els anys de bonança i una reducció exacerba d'aquesta en els moments de crisi.
+
+Xifré, R. (2018). La inversión en I+ D y la innovación después de la crisis: Sector público y sector privado. Cuadernos de Información económica, 265, 13-24.
+
+<br>
+
+```{r figure 3, echo=FALSE, message=FALSE, warning=FALSE,fig.align = 'center'}
+df_final %>%
+  ggplot(aes(x = Año, y = `Gastos totales (miles de euros)`, color = Sector)) + 
+  geom_smooth(se = FALSE, size = 1.2) +
+  geom_point(size = 2, alpha = 0.7) +
+  facet_grid(~Tamaño) +
+  labs(
+    title = "Despesa privada total per sector i mida",
+    subtitle = "Evolució de la despesa privada al llarg dels anys",
+    x = "",
+    y = "",
+    color = "Sector") +
+  scale_color_brewer(palette = "Set2")
+```
+
+<br>
+
+```{r figure 4, echo=FALSE, message=FALSE, warning=FALSE,fig.align = 'center'}
+df_final %>%
+  ggplot(aes(x = Año, y = `Gastos totales (miles de euros)`, color = Tamaño)) + 
+  geom_smooth(se = FALSE, size = 1.2) +
+  geom_point(size = 2, alpha = 0.7) +
+  facet_grid(~Sector) +
+  labs(
+    title = "Despesa privada total per mida i sector",
+    subtitle = "Evolució de la despesa privada al llarg dels anys",
+    x = "",
+    y = "",
+    color = "Sector") +
+  scale_color_brewer(palette = "Set2")
+```
+
+<br>
+
+```{r figure 5, echo=FALSE, message=FALSE, warning=FALSE,fig.align = 'center'}
+df_final %>%
+  filter(Tamaño == "Total",
+         Sector == "TOTAL EMPRESAS")  %>%
+  ggplot(aes(x = Año, y = `Government-financed BERD`, color = Sector)) + 
+  geom_smooth(se = FALSE, size = 1.2) +
+  geom_point(size = 2, alpha = 0.7) +
+  labs(
+    title = "Despesa pública total",
+    subtitle = "Evolució de la despesa pública al llarg dels anys",
+    x = "",
+    y = "",
+    color = "Mida i sector") +
+  scale_color_brewer(palette = "Set2")
+```
+
+<br>
+
+```{r figure 6, echo=FALSE, message=FALSE, warning=FALSE,fig.align = 'center'}
+df_final %>%
+  filter(Tamaño == "Total",
+         Sector == "TOTAL EMPRESAS") %>%
+  ggplot(aes(x = Año, y = `Indirect government support through R&D tax incentives`, color = Sector)) + 
+  geom_smooth(se = FALSE, size = 1.2) +
+  geom_point(size = 2, alpha = 0.7) +
+  labs(
+    title = "Incentius fiscals a la innovació",
+    subtitle = "Evolució dels incentius fiscals a la innovació al llarg dels anys",
+    x = "",
+    y = "",
+    color = "Mida i sector") +
+  scale_color_brewer(palette = "Set2")
+```
+
+<br>
+
+## Anàlisi estadística
+
+#### Resum estadístic total d'empreses innovadores per mida i sector
+
+A continuació es mostren les principals mètriques estadístiques pels diferents grups estudiats en referència al total d'empreses innovadores.
+
+```{r data summary, echo=FALSE, message=FALSE, warning=FALSE, paged.print=TRUE}
+df_final %>%
+  group_by(Tamaño, Sector) %>%
+  summarize(min = min(Total),
+            q1 = quantile(Total, 0.25),
+            median = median(Total),
+            mean = mean(Total),
+            sd = sd(Total),
+            q3 = quantile(Total, 0.75),
+            max = max(Total)) %>%
+  paged_table()
+```
+
+Una mètrica que també pot resultar d'utilitat per analitzar més a fons la innovació, és el coeficient de variació (CV), definit com la relació entre la desviació típica i la mitjana: $\frac{\sigma}{\mu}$. Aquesta és una mesura de variabilitat relativa de les dades.
+
+A la taula següent es poden comparar els CV dels diferents grups.
+
+-   Les grans empreses, especialment les del sector serveis, són les que presenten el CV més baix i, per tant, la menor variabilitat.
+
+-   Pel que fa a les companyies de menys de 250 treballadors, en el seu conjunt son el grup que presenta més variabilitat, seguides pel total d'empreses considerades.
+
+```{r data CV, echo=FALSE, message=FALSE, warning=FALSE, paged.print=TRUE}
+df_final %>%
+  group_by(Tamaño, Sector) %>%
+  summarize(CV = sd(Total)/mean(Total) * 100) %>%
+  arrange(CV) %>%
+  paged_table()
+```
+
+<br>
+
+#### Resum estadístic despesa privada en innovació per mida i sector
+
+A continuació es mostren les principals mètriques estadístiques pels diferents grups estudiats en referència a la despesa privada en innovació.
+
+```{r data summary 2, echo=FALSE, message=FALSE, warning=FALSE, paged.print=TRUE}
+df_final %>%
+  group_by(Tamaño, Sector) %>%
+  summarize(min = min(`Gastos totales (miles de euros)`),
+            q1 = quantile(`Gastos totales (miles de euros)`, 0.25),
+            median = median(`Gastos totales (miles de euros)`),
+            mean = mean(`Gastos totales (miles de euros)`),
+            sd = sd(`Gastos totales (miles de euros)`),
+            q3 = quantile(`Gastos totales (miles de euros)`, 0.75),
+            max = max(`Gastos totales (miles de euros)`)) %>%
+  paged_table()
+```
+
+En el cas d'aquesta mètrica, l'anàlisi del CV revela que, de nou les grans empreses son aquelles amb menor variabilitat i les de menys de 250 treballadors les que presentn els CV més elevats. Pel que fa al total d'empreses en conjunt, el CV és de 14,9.
+
+```{r data CV 2, echo=FALSE, message=FALSE, warning=FALSE, paged.print=TRUE}
+df_final %>%
+  group_by(Tamaño, Sector) %>%
+  summarize(CV = sd(`Gastos totales (miles de euros)`)/mean(`Gastos totales (miles de euros)`) * 100) %>%
+  arrange(CV) %>%
+  paged_table()
+```
+
+<br>
+
+#### Resum estadístic despesa pública en innovació (Total empreses)
+
+A continuació es mostren les principals mètriques estadístiques pels diferents grups estudiats en referència a la despesa pública en innovació. En aquest cas el CV s'ha incorporta a la taula resum.
+
+```{r data summary 3, echo=FALSE, message=FALSE, warning=FALSE, paged.print=TRUE}
+df_final %>%
+  filter(Tamaño == "Total",
+         Sector == "TOTAL EMPRESAS") %>%
+  summarize(min = min(`Government-financed BERD`),
+            q1 = quantile(`Government-financed BERD`, 0.25),
+            median = median(`Government-financed BERD`),
+            mean = mean(`Government-financed BERD`),
+            sd = sd(`Government-financed BERD`),
+            q3 = quantile(`Government-financed BERD`, 0.75),
+            max = max(`Government-financed BERD`),
+            CV = sd(`Government-financed BERD`)/mean(`Government-financed BERD`) * 100)
+```
+
+<br>
+
+#### Resum estadístic incentius fiscals a la innovació (Total empreses)
+
+A continuació es mostren les principals mètriques estadístiques pels diferents grups estudiats en referència als incentius fiscals a la innovació. En aquest cas el CV s'ha incorporta a la taula resum.
+
+```{r data summary 4, echo=FALSE, message=FALSE, warning=FALSE, paged.print=TRUE}
+df_final %>%
+  filter(Tamaño == "Total",
+         Sector == "TOTAL EMPRESAS") %>%
+  summarize(min = min(`Indirect government support through R&D tax incentives`),
+            q1 = quantile(`Indirect government support through R&D tax incentives`, 0.25),
+            median = median(`Indirect government support through R&D tax incentives`),
+            mean = mean(`Indirect government support through R&D tax incentives`),
+            sd = sd(`Indirect government support through R&D tax incentives`),
+            q3 = quantile(`Indirect government support through R&D tax incentives`, 0.75),
+            max = max(`Indirect government support through R&D tax incentives`),
+            CV = sd(`Indirect government support through R&D tax incentives`)/mean(`Indirect government support through R&D tax incentives`) * 100)
+```
+
+<br>
+
+#### Comparació global del CV
+
+Si comparem els CV de les quatre mètriques pel conjunt d'empreses de totes les mides i sectors es pot comprovar que:
+
+-   El total d'empreses innovadores és el CV més elevat amb un valor superior de 33,5. En segon lloc trobem la despesa pública (31,5). La despesa privada i els incentius fiscals a la innovació presenten valors significativament menor, 14,9 i 9,6 respectivament.
+
+<br>
+
+### Anàlisi de correlacions
+
+En aquesta secció s'analitzaran les relacions entre les variables d'interès. A les següents il·lustacións es poden observar, en el triangle inferior de la matriu, els diagrames de dispersió entre les variables, a la diagonal, el gràfic de densitat de cadascuna d'elles i, finalment, al triangle superior, els coeficients de correlació de Pearson.
+
+La primera figura compara el total d'empreses innovadores amb la despesa privada total, la despesa pública i els incentius fiscals. Es pot comprovar que:
+
+-   El total d'empreses innovadores presenta una correlació superior al 55% amb la despesa privada, superior al 52% amb la despesa pública i del 36% amb els incentius fiscals.
+-   Una segona observació remarcable és la íntima correlació (\>89%) entre la despesa pública i la privada. Depenent del modelatge de dades realitzat això pot suposar un problema a l'hora d'interpretar els coeficients del model a causa de l'elevat grau de colinearitat entre aquestes dues variables.
+-   Finalment, també resulta interessant observar que la despesa pública i el recolzament gubernamental de la innovació a través d'incentius fiscals, pràcticament no presenten cap relació.
+
+<br>
+
+```{r data pairplot, echo=FALSE, message=FALSE, warning=FALSE,fig.align = 'center'}
+df_final %>%
+  filter(Tamaño == "Total",
+         Sector == "TOTAL EMPRESAS") %>%
+  dplyr::select(c(4,5,13,14)) %>%
+  ggpairs(axisLabels = "none", columnLabels = c("Empreses innovadores","Despesa privada","Despesa pública","Incentius fiscals"))
+```
+
+<br>
+
+La segona figura compara el total d'empreses innovadores amb la despesa privada desagregada en els seus components. Es pot comprovar que:
+
+-   El total d'empreses innovadores està estretament relacionat amb l'adquisició de capital (88%), amb la inversió en formacions (74%) i amb la despesa destinada a introduïr innovacions en el mercat.
+-   Curiosament, la correlació amb la inversió en I+D interna és negativa.
+-   En considerar les relacions entre les variables independents destaquen les elevades correlacions entre la inversió en formacions, l'adquisició de capital i la de coneixements.
+
+<br>
+
+```{r data pairplot 2, echo=FALSE, message=FALSE, warning=FALSE,fig.align = 'center'}
+df_final %>%
+  filter(Tamaño == "Total",
+         Sector == "TOTAL EMPRESAS") %>%
+  dplyr::select(c(4,6:12)) %>%
+  ggpairs(axisLabels = "none",columnLabels = c("Emp inno","I+D int","I+D ext","Adq cap","Adq con", "Form", "Inno merc", "Prod/Distr"))
+```
+
+<br>
+
+Per entendre quines variables presenten nivells de correlació no acceptables podem calcular el Variance Inflation Factor (VIF). Quan aquesta mètrica és superior a 5, això indica que el grau de colinearitat és suficientment elevat com per evitar una interpretació correcta dels coeficients dels models de regressió.
+
+Com se sospitava, la despesa privada i la despesa pública presenten un VIF elevat i ho haurem de tenir en compte.
+
+```{r data VIF, echo=FALSE, message=FALSE, warning=FALSE,fig.align = 'center'}
+temp_df <- df_final %>%
+  filter(Tamaño == "Total",
+         Sector == "TOTAL EMPRESAS") %>%
+  dplyr::select(c(4,5,13,14))
+
+temp_model <- lm(data = temp_df, Total ~ `Gastos totales (miles de euros)` + `Government-financed BERD` + `Indirect government support through R&D tax incentives`)
+vif(temp_model)
+```
+
+Si posem el focus en els components de la despesa privada, entre ells, la majoria de VIF superen el 5 exceptuant la variable d'activitats de formació.
+
+```{r data VIF 2, echo=FALSE, message=FALSE, warning=FALSE,fig.align = 'center'}
+temp_df <- df_final %>%
+  filter(Tamaño == "Total",
+         Sector == "TOTAL EMPRESAS") %>%
+  dplyr::select(c(4,6:12))
+
+colnames(temp_df) <-  c("Emp_inno","ID_int","ID_ext","Adq_cap","Adq_con", "Form", "Inno_merc", "Prod_Distr")
+
+temp_model <- lm(data = temp_df, Emp_inno ~ ID_int + ID_ext + Adq_cap + Adq_con + Form + Inno_merc + Prod_Distr)
+vif(temp_model)
+```
+
+### Distribucions de les variables
+
+A continuació es presenten els histogrames de les variables principals de l'anàlisi.
+
+<br>
+
+```{r data hist, echo=FALSE, message=FALSE, warning=FALSE,fig.align = 'center'}
+temp_df <- df_final %>%
+  filter(Sector == "TOTAL EMPRESAS",
+         Tamaño == "Total") %>%
+  arrange(Año)
+
+par(mfrow=c(1, 4))
+
+hist(temp_df$Total, xlab="",ylab="Freqüència", main="Empreses innovadores")
+hist(temp_df$`Gastos totales (miles de euros)`, xlab="",ylab="Freqüència", main="Despesa total")
+hist(temp_df$`Government-financed BERD`, xlab="",ylab="Freqüència", main="Despesa pública")
+hist(temp_df$`Indirect government support through R&D tax incentives`, xlab="",ylab="Freqüència", main="Incentius fiscals")
+```
+
+<br>
+
+### Q-Q Plots
+
+En aquesta secció s'han graficat els Q-Q plots de les variables principals per comparar els seus quantils amb els quantils teòrics d'una distribució normal.
+
+Es pot observar com la mètrica d'empreses innovadores i els incentius fiscals es distribueixen de manera més o menys gaussiana, especialment en el cas dels quantils centrals. Pel que fa a la despesa privada, el seu comportament també es similar al de la distribució normal, la despesa pública presenta desviacions una mica majors, especialment pels valors més extrems.
+
+<br>
+
+```{r data normality, echo=FALSE, message=FALSE, warning=FALSE,fig.align = 'center'}
+par(mfrow=c(2, 2))
+
+qqnorm(temp_df$Total, pch = 1, frame = FALSE, main = "Normal Q-Q Plot Empreses innovadores")
+qqline(temp_df$Total, col = "steelblue", lwd = 2)
+
+qqnorm(temp_df$`Gastos totales (miles de euros)`, pch = 1, frame = FALSE, main = "Normal Q-Q Plot Despesa privada")
+qqline(temp_df$`Gastos totales (miles de euros)`, col = "steelblue", lwd = 2)
+
+qqnorm(temp_df$`Government-financed BERD`, pch = 1, frame = FALSE, main = "Normal Q-Q Plot Despesa pública")
+qqline(temp_df$`Government-financed BERD`, col = "steelblue", lwd = 2)
+
+qqnorm(temp_df$`Indirect government support through R&D tax incentives`, pch = 1, frame = FALSE, main = "Normal Q-Q Plot Incentius fiscals")
+qqline(temp_df$`Indirect government support through R&D tax incentives`, col = "steelblue", lwd = 2)
+```
+
+<br>
+
+### Anàlisi d'autocorrelació total empreses innovadores
+
+Com a pas final de l'anàlisi estadística abans de procedir a la creació del model economètric serà interessant estudiar el grau d'autocorrelació de la variable dependent de l'estudi.
+
+L'autocorrelació ens pot aportar informació sobre el comportament de les sèries temporal, especialment sobre la seva periodicitat i la dependència dels valors de cada període en referència a períodes anteriors. A continuació es poden observar l'autocorrelació (ACF) i l'autocorrelació parcial (PACF) del la mètrica "Total d'empreses innovadores". El primer ens informa sobre el grau d'autocorrelació de la sèrie temporal en diferents lags, el segon exposa la relació directa entre les observacions i els diversos lags, excloent les contribucions de lags anteriors.
+
+Les conclusions que podem extreure son les següents:
+
+-   Existeix un grau significatiu d'autocorrelació.
+-   El primer gràfic ens informa de que solament els lag 1 i 2 son estadísticament significatius. Veiem també que el grau d'autocorrelació decreix amb cada lag successiu.
+-   El segon gràfic revela que no existeixen autocorrelacions parcials significatives més enllà del lag 1, el que indica que l'efecte de les observacions en valors posteriors disminueix ràpidament.
+-   Segons la informació dels gràfics el model més adient per tractar la sèrie temporar seria un model autoregressiu de grau 1 (AR(1)). També reforça la idea de que l'aplicació d'un model ocult de Markov és una decisió encertada. Això es deu a que la propietat de Markov, que caracteritza aquest tipus de models, es basa en la suposició de que les observacions futurs només es veuen influides per aquelles immediatament anteriors a elles, independentment de la resta.
+
+<br>
+
+```{r acf/pacf, echo=FALSE, message=FALSE, warning=FALSE,fig.align = 'center'}
+par(mfrow=c(1, 2))
+df_final %>%
+    filter(Sector == "TOTAL EMPRESAS",
+         Tamaño == "Total") %>%
+  arrange(Año) %>%
+  dplyr::select("Total") %>%
+  acf(main = "ACF Innovació")
+
+df_final %>%
+    filter(Sector == "TOTAL EMPRESAS",
+         Tamaño == "Total") %>%
+  arrange(Año) %>%
+  dplyr::select(Total) %>%
+  pacf(main = "PACF Innovació")
+```
+
+## Modelatge de les dades
+En aquesta secció crearem diversos models ocults de Markov (HMM) per analitzar el comportament dels diferents grups d'empreses. Cal comentar que les dades s'han reescalat mitjançant la normalització min-max.
+
+### Determinem el nombre òptim de règims
+En primer lloc determinarem el nombre òptim de règim segons l'anàlisi de dos criteris d'informació, el BIC i l'AIC. A partir de l'observació dels gràfics presentats anteriorment, podem concloure que el nombre de règims en que pot estar la mètrica "Total d'empreses innovadores" pel període estudiat son no més de 2 o 3.
+
+```{r HMM regime test, echo=FALSE, message=FALSE, warning=FALSE, paged.print=TRUE, include = FALSE}
+temp_df <- df_final %>%
+  filter(Sector == "TOTAL EMPRESAS",
+         Tamaño == "Total") %>%
+  arrange(Año) %>%
+  dplyr::select_if(is.numeric) %>%
+  scale()%>%
+  data.frame()
+
+set.seed(7777)
+hmm1 <- depmix(data = temp_df,
+               response = Total ~ 1,
+               nstates = 2,
+               family = gaussian(),
+               trstart = runif(4)) 
+
+fhmm1 <- fit(hmm1, emc=em.control(rand=FALSE))
+
+hmm2 <- depmix(data = temp_df,
+               response = Total ~ 1,
+               nstates = 3,
+               family = gaussian(),
+               trstart = runif(9)) 
+
+fhmm2 <- fit(hmm2, emc=em.control(rand=FALSE))
+```
+
+```{r HMM InfoCrit, echo=FALSE, message=FALSE, warning=FALSE, paged.print=TRUE}
+print(fhmm1)
+```
+
+No sembla haver-hi gran diferència entre els dos models, en el cas del primer el BIC ésmés òptim i en el cas del segon ho és l'AIC. Recorrerem, doncs a examinar visualment les dades per fer l'elecció del model.
+
+```{r HMM InfoCrit 2, echo=FALSE, message=FALSE, warning=FALSE, paged.print=TRUE}
+print(fhmm2)
+```
+
+<br>
+
+#### Innovació segons els règims predits
+A partir del gràfics següents, es pot veure que ambdós models poden resultar útils, depenent de la interpretació que volguem fer de les dades. El primer es limita a dividir les observacions en dos règims, un d'innovació elevada i l'altre baixa i el segon inclou un estat intermig d'innovació mitjana o decreixent.
+
+<br>
+
+```{r HMM hidden states, echo=FALSE, message=FALSE, warning=FALSE, paged.print=TRUE}
+df_final %>%
+  filter(Sector == "TOTAL EMPRESAS",
+         Tamaño == "Total") %>%
+  arrange(Año) %>%
+  cbind(posterior(fhmm1)) %>% 
+  ggplot(aes(x = Año, y = Total,color = factor(state))) + 
+  geom_smooth(se = FALSE, size = 1) +
+  geom_point(size = 2, apha = 0.7) +
+  labs(
+    title = "Empreses innovadores",
+    subtitle = "Evolució de innovació segons el règim al llarg dels anys",
+    x = "",
+    y = "",
+    color = "Règim") +
+  scale_color_brewer(palette = "Set2")
+```
+
+<br>
+
+```{r HMM hidden states 2, echo=FALSE, message=FALSE, warning=FALSE, paged.print=TRUE}
+df_final %>%
+  filter(Sector == "TOTAL EMPRESAS",
+         Tamaño == "Total") %>%
+  arrange(Año) %>%
+  cbind(posterior(fhmm2)) %>% 
+  ggplot(aes(x = Año, y = Total,color = factor(state))) + 
+  geom_smooth(se = FALSE, size = 1) +
+  geom_point(size = 2, apha = 0.7) +
+  labs(
+    title = "Empreses innovadores",
+    subtitle = "Evolució de innovació segons el règim al llarg dels anys",
+    x = "",
+    y = "",
+    color = "Règim") +
+  scale_color_brewer(palette = "Set2")
+```
+
+<br>
+
+Aquesta tercera imatge permet observar el comportament de les variables d'interès segons els règims assignats pel model de 3 estats.
+
+<br>
+
+```{r HMM metrics by regime, echo=FALSE, message=FALSE, warning=FALSE, paged.print=TRUE}
+df_final %>%
+  filter(Sector == "TOTAL EMPRESAS",
+         Tamaño == "Total") %>%
+  arrange(Año) %>%
+  cbind(posterior(fhmm2)) %>%
+  rename("Empreses innovadores" = Total,
+         "Despesa privada" = `Gastos totales (miles de euros)`,
+         "Despesa pública" = `Government-financed BERD`,
+         "Incentius fiscals" = `Indirect government support through R&D tax incentives`) %>%
+  pivot_longer(cols = c(4,5,13,14)) %>%
+  ggplot(aes(x = Año, y = value,color = factor(state))) + 
+  geom_smooth(se = FALSE, size = 1) +
+  geom_point(size = 2, apha = 0.7) +
+  facet_wrap(~name,scales = "free_y") +
+  labs(
+    title = "Mètriques pel conjunt empresarial",
+    subtitle = "Mètriques segons el model de 3 règims al llarg dels anys",
+    x = "",
+    y = "",
+    color = "Règim") +
+  scale_color_brewer(palette = "Set2")
+```
+
+<br>
+
+#### Resum del model
+Finalment, es poden observar les característiques dels dos models a continuació.
+
+En el cas del primer, trobem dos règims, el primer representa períodes d'innovació elevada i el segon, moments de poca innovació. El segon model, en canvi agrupa els períodes en aquells d'innovació elevada, els d'innovació mitjana o en recessió, i, finalment, els de poca innovació.
+
+En analitzar la matriu de transicions s'observa que, segons el primer model, la probabilitat de romandre en el primer règim és del 86% mentre que passar d'aquest a un període de menys innovació té una probabilitat del 14%. Un cop en règims del tipus 2, la probabilitat estimada de retornar a moments amb molta innovació és pràcticament nula segons les dades analitzades. 
+
+En el cas del segon model,la matriu de transicions prediu una probabilitat de passar del règim 1 al 2 del 66% o de l'1 al 3 del 34%. La probabilitat de romandre en el règim 2 és del 84% i, finalment, la de romandre en el 3 és del 100%, unes prediccions similars a les del primer model.
+
+Per interpretar correctament aquestes probabliilitats s'ha de recordar que partim d'un conjunt de dades molt limitat i que, per tant, el model estarà molt condicionat per les tendències proponderants durant els darrers 15 o 10 anys. Tanmateix, ens indica que existeix una forta tendència recessiva de la innovació durant aquests anys.
+
+```{r HMM summary, echo=FALSE, message=FALSE, warning=FALSE, paged.print=TRUE}
+summary(fhmm1)
+```
+
+```{r HMM summary 2, echo=FALSE, message=FALSE, warning=FALSE, paged.print=TRUE}
+summary(fhmm2)
+```
+
+### Aplicació de models segons la mida i el sector dels grups d'empreses
+En aquest cas s'ha aplicat el model amb el nombre òptim de règims per cada grup d'empreses. A continuació es poden veure les característiques de cadascun i el gràfic de les diverses mètriques segons el règim. També es pot comprovar la freqüència amb què es dona cada un dels règims en els diversos casos.
+
+```{r HMM by size and sector, echo=FALSE, message=FALSE, warning=FALSE, paged.print=TRUE, include = FALSE}
+temp_df <- df_final %>%
+  filter(Sector == "TOTAL EMPRESAS",
+         Tamaño == "250 y más empleados") %>%
+  arrange(Año) %>%
+  dplyr::select_if(is.numeric) %>%
+  scale()%>%
+  data.frame()
+
+temp_df2 <- df_final %>%
+  filter(Sector == "TOTAL EMPRESAS",
+         Tamaño == "Menos de 250 empleados") %>%
+  arrange(Año) %>%
+  dplyr::select_if(is.numeric) %>%
+  scale()%>%
+  data.frame()
+
+temp_df3 <- df_final %>%
+  filter(Sector == "TOTAL INDUSTRIA",
+         Tamaño == "Total") %>%
+  arrange(Año) %>%
+  dplyr::select_if(is.numeric) %>%
+  scale()%>%
+  data.frame()
+
+temp_df4 <- df_final %>%
+  filter(Sector == "TOTAL SERVICIOS",
+         Tamaño == "Total") %>%
+  arrange(Año) %>%
+  dplyr::select_if(is.numeric) %>%
+  scale()%>%
+  data.frame()
+
+set.seed(7777)
+hmm1 <- depmix(data = temp_df,
+               response = Total ~ 1,
+               nstates = 2,
+               family = gaussian(),
+               trstart = runif(4)) 
+
+fhmm1 <- fit(hmm1, emc=em.control(rand=FALSE))
+
+hmm2 <- depmix(data = temp_df2,
+               response = Total ~ 1,
+               nstates = 3,
+               family = gaussian(),
+               trstart = runif(9)) 
+
+fhmm2 <- fit(hmm2, emc=em.control(rand=FALSE))
+
+hmm3 <- depmix(data = temp_df3,
+               response = Total ~ 1,
+               nstates = 3,
+               family = gaussian(),
+               trstart = runif(9)) 
+
+fhmm3 <- fit(hmm3, emc=em.control(rand=FALSE))
+
+hmm4 <- depmix(data = temp_df4,
+               response = Total ~ 1,
+               nstates = 2,
+               family = gaussian(),
+               trstart = runif(4)) 
+
+fhmm4 <- fit(hmm4, emc=em.control(rand=FALSE))
+```
+
+```{r HMM summary by size and sector, echo=FALSE, message=FALSE, warning=FALSE, paged.print=TRUE}
+summary(fhmm1)
+```
+A continuació veiem que les grans empreses presenten la mateixa incidència de règims 1 i 2.
+
+```{r HMM state count, echo=FALSE, message=FALSE, warning=FALSE, paged.print=TRUE}
+df_final %>%
+  filter(Sector == "TOTAL EMPRESAS",
+         Tamaño == "250 y más empleados") %>%
+  arrange(Año) %>%
+  cbind(posterior(fhmm1)) %>%
+  group_by(state) %>%
+  count()
+```
+
+
+
+<br>
+
+```{r HMM metrics by size and sector, echo=FALSE, message=FALSE, warning=FALSE, paged.print=TRUE}
+df_final %>%
+  filter(Sector == "TOTAL EMPRESAS",
+         Tamaño == "250 y más empleados") %>%
+  arrange(Año) %>%
+  cbind(posterior(fhmm1)) %>%
+  rename("Empreses innovadores" = Total,
+         "Despesa privada" = `Gastos totales (miles de euros)`,
+         "Despesa pública" = `Government-financed BERD`,
+         "Incentius fiscals" = `Indirect government support through R&D tax incentives`) %>%
+  pivot_longer(cols = c(4,5,13,14)) %>%
+  ggplot(aes(x = Año, y = value)) + 
+  geom_smooth(se = FALSE, size = 1) +
+  geom_point(aes(color = factor(state)), size = 2, apha = 1) +
+  facet_wrap(~name,scales = "free_y") +
+  labs(
+    title = "Mètriques per empreses de més de 250 empleats",
+    subtitle = "Mètriques segons el model de 2 règims al llarg dels anys",
+    x = "",
+    y = "",
+    color = "Règim") +
+  scale_color_brewer(palette = "Set2")
+```
+
+```{r HMM summary by size and sector 2, echo=FALSE, message=FALSE, warning=FALSE, paged.print=TRUE}
+summary(fhmm2)
+```
+
+Les empreses de menys de 250 treballadors presenten la següent incidència de règims.
+
+```{r HMM state count 2, echo=FALSE, message=FALSE, warning=FALSE, paged.print=TRUE}
+df_final %>%
+  filter(Sector == "TOTAL EMPRESAS",
+         Tamaño == "Menos de 250 empleados") %>%
+  arrange(Año) %>%
+  cbind(posterior(fhmm2)) %>%
+  group_by(state) %>%
+  count()
+```
+
+<br>
+
+```{r HMM metrics by size and sector 2, echo=FALSE, message=FALSE, warning=FALSE, paged.print=TRUE}
+df_final %>%
+  filter(Sector == "TOTAL EMPRESAS",
+         Tamaño == "Menos de 250 empleados") %>%
+  arrange(Año) %>%
+  cbind(posterior(fhmm2)) %>%
+  rename("Empreses innovadores" = Total,
+         "Despesa privada" = `Gastos totales (miles de euros)`,
+         "Despesa pública" = `Government-financed BERD`,
+         "Incentius fiscals" = `Indirect government support through R&D tax incentives`) %>%
+  pivot_longer(cols = c(4,5,13,14)) %>%
+  ggplot(aes(x = Año, y = value, color = factor(state))) + 
+  geom_smooth(se = FALSE, size = 1) +
+  geom_point(size = 2, apha = 1) +
+  facet_wrap(~name,scales = "free_y") +
+  labs(
+    title = "Mètriques per empreses de menys de 250 empleats",
+    subtitle = "Mètriques segons el model de 3 règims al llarg dels anys",
+    x = "",
+    y = "",
+    color = "Règim") +
+  scale_color_brewer(palette = "Set2")
+```
+
+```{r HMM summary by size and sector 3, echo=FALSE, message=FALSE, warning=FALSE, paged.print=TRUE}
+summary(fhmm3)
+```
+
+Les empreses del sector industrial presenten la següent incidència de règims.
+
+```{r HMM state count 3, echo=FALSE, message=FALSE, warning=FALSE, paged.print=TRUE}
+df_final %>%
+  filter(Sector == "TOTAL INDUSTRIA",
+         Tamaño == "Total") %>%
+  arrange(Año) %>%
+  cbind(posterior(fhmm3)) %>%
+  group_by(state) %>%
+  count()
+```
+
+<br>
+
+```{r HMM metrics by size and sector 3, echo=FALSE, message=FALSE, warning=FALSE, paged.print=TRUE}
+df_final %>%
+  filter(Sector == "TOTAL INDUSTRIA",
+         Tamaño == "Total") %>%
+  arrange(Año) %>%
+  cbind(posterior(fhmm3)) %>%
+  rename("Empreses innovadores" = Total,
+         "Despesa privada" = `Gastos totales (miles de euros)`,
+         "Despesa pública" = `Government-financed BERD`,
+         "Incentius fiscals" = `Indirect government support through R&D tax incentives`) %>%
+  pivot_longer(cols = c(4,5,13,14)) %>%
+  ggplot(aes(x = Año, y = value, color = factor(state))) + 
+  geom_smooth(se = FALSE, size = 1) +
+  geom_point(size = 2, apha = 1) +
+  facet_wrap(~name,scales = "free_y") +
+  labs(
+    title = "Mètriques per empreses del sector industrial",
+    subtitle = "Mètriques segons el model de 3 règims al llarg dels anys",
+    x = "",
+    y = "",
+    color = "Règim") +
+  scale_color_brewer(palette = "Set2")
+```
+
+```{r HMM summary by size and sector 4, echo=FALSE, message=FALSE, warning=FALSE, paged.print=TRUE}
+summary(fhmm4)
+```
+
+Les empreses del sector serveis presenten la següent incidència de règims.
+
+```{r HMM state count 4, echo=FALSE, message=FALSE, warning=FALSE, paged.print=TRUE}
+df_final %>%
+  filter(Sector == "TOTAL SERVICIOS",
+         Tamaño == "Total") %>%
+  arrange(Año) %>%
+  cbind(posterior(fhmm4)) %>%
+  group_by(state) %>%
+  count()
+```
+
+<br>
+
+```{r HMM metrics by size and sector 4, echo=FALSE, message=FALSE, warning=FALSE, paged.print=TRUE}
+df_final %>%
+  filter(Sector == "TOTAL SERVICIOS",
+         Tamaño == "Total") %>%
+  arrange(Año) %>%
+  cbind(posterior(fhmm4)) %>%
+  rename("Empreses innovadores" = Total,
+         "Despesa privada" = `Gastos totales (miles de euros)`,
+         "Despesa pública" = `Government-financed BERD`,
+         "Incentius fiscals" = `Indirect government support through R&D tax incentives`) %>%
+  pivot_longer(cols = c(4,5,13,14)) %>%
+  ggplot(aes(x = Año, y = value, color = factor(state))) + 
+  geom_smooth(se = FALSE, size = 1) +
+  geom_point(size = 2, apha = 1) +
+  facet_wrap(~name,scales = "free_y") +
+  labs(
+    title = "Mètriques per empreses del sector terciari",
+    subtitle = "Mètriques segons el model de 2 règims al llarg dels anys",
+    x = "",
+    y = "",
+    color = "Règim") +
+  scale_color_brewer(palette = "Set2")
+```
+
+
+
+
+
+
